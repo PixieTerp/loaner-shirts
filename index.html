@@ -91,7 +91,29 @@ let S;
 try{S=JSON.parse(document.getElementById('state').textContent)}catch(e){S={}}
 S.students=S.students||[];S.log=S.log||[];if(!S.nextId)S.nextId=1;delete S.stock;delete S.limit;
 
-let art=null,mode='local',saveTimer=null,publishing=false;
+// ===== SHARED GOOGLE SHEET =====
+// Paste your Google Apps Script "Web app" URL between the quotes (it ends in /exec):
+const SHEET_URL='https://script.google.com/macros/s/AKfycbzTICU0k1y_bizIMyjkeI7Eq3RVC0HHlMugCmcMscDMK0gbp458xVKqNfK1Wj6VftNU/exec';
+// ================================
+let art=null,mode='local',saveTimer=null,publishing=false,sheetOK=null;
+function newRid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
+function fromRows(rows){const st={students:[],log:[],nextId:1};const map={};
+  rows.forEach(r=>{const first=String(r.first||'').trim(),li=String(r.li||'').trim().toUpperCase();if(!first||!li)return;
+    const k=(first+'|'+li).toLowerCase();let s=map[k];if(!s){s={id:st.nextId++,first,li};map[k]=s;st.students.push(s)}
+    st.log.push({id:s.id,t:r.t,sess:r.sess,bag:!!r.bag,rid:String(r.id)})});
+  st.log.sort((a,b)=>new Date(a.t)-new Date(b.t));return st}
+async function pull(){
+  try{const r=await fetch(SHEET_URL,{cache:'no-store'});const j=await r.json();if(!j.ok)throw 0;S=fromRows(j.rows);sheetOK=true}
+  catch(e){sheetOK=false}
+  render();
+}
+async function push(body){
+  publishing=true;render();
+  try{const r=await fetch(SHEET_URL,{method:'POST',body:JSON.stringify(body)});const j=await r.json();if(!j.ok)throw 0;S=fromRows(j.rows);sheetOK=true}
+  catch(e){sheetOK=false;toast('⚠️ Not saved — check the internet and try again');pull()}
+  publishing=false;render();
+}
+function commit(body){if(mode==='sheet')push(body);else save()}
 function autoDays(){const d=new Date().getDay();return (d===2||d===4)?'TTh':'MW'}
 function autoTime(){return new Date().getHours()<12?'AM':'PM'}
 let ui={tab:'give',days:autoDays(),time:autoTime(),name:'',bag:false,q:''};
@@ -156,10 +178,11 @@ function record(){
   let s=findStudent(p);
   if(!s){s={id:S.nextId++,first:p.first,li:p.li};S.students.push(s)}
   const sess=ui.days+' '+ui.time;
-  S.log.push({id:s.id,t:new Date().toISOString(),sess,bag:true});
+  const rid=newRid(),t=new Date().toISOString();
+  S.log.push({id:s.id,t,sess,bag:true,rid});
   const n=count(s.id);
   ui.name='';ui.bag=false;
-  save();render();
+  commit({action:'add',id:rid,t,sess,first:s.first,li:s.li,bag:true});render();
   toast('👕 Loaner #'+n+' recorded for '+esc(s.first+' '+s.li+'.')+'<br>Put the bag in locker <b>'+s.li+'</b> after school');
   const f=document.getElementById('nm');if(f)f.focus();
 }
@@ -169,6 +192,8 @@ function render(){
   const root=document.getElementById('root');
   let h='<div class="wrap"><div class="head"><h1>👕 Loaner Shirt Tracker</h1><img class="logo" alt="ThrivePoint Academy of Nevada" src="'+LOGO+'"></div><p class="sub">Check out a loaner shirt in 3 steps.'+(publishing?' <i>· saving…</i>':'')+'</p>';
   if(mode==='local')h+='<div class="banner">Saving on this device only — records here won\'t show up on other phones or computers.</div>';
+  if(mode==='sheet'&&sheetOK===null)h+='<div class="banner">Loading records from the Google Sheet…</div>';
+  if(mode==='sheet'&&sheetOK===false)h+='<div class="banner">⚠️ Can\'t reach the Google Sheet — check the internet. <button class="btn sm ghost" data-a="retry">Try again</button></div>';
   if(mode==='readonly')h+='<div class="banner">View-only on this device — loaners recorded here won\'t be saved.</div>';
   h+='<div class="tabs">'+[['give','Check out a shirt'],['report','Counts & sessions'],['log','History'],['qr','QR code'],['students','Fix names']].map(t=>'<button class="tab'+(ui.tab===t[0]?' on':'')+'" data-tab="'+t[0]+'">'+t[1]+'</button>').join('')+'</div>';
   if(ui.tab==='give')h+=giveHTML();
@@ -177,7 +202,9 @@ function render(){
   if(ui.tab==='qr')h+=qrHTML();
   if(ui.tab==='students')h+=studentsHTML();
   h+='</div>';
+  const ae=document.activeElement,aid=ae&&ae.id,ss=ae&&ae.selectionStart,se=ae&&ae.selectionEnd;
   root.innerHTML=h;
+  if(aid&&(aid==='nm'||aid==='lq')){const f=document.getElementById(aid);if(f){f.focus();try{f.setSelectionRange(ss,se)}catch(e){}}}
   if(ui.tab==='qr')drawQR();
 }
 
@@ -282,7 +309,8 @@ document.addEventListener('click',e=>{
   if(t.dataset.pick){const s=byId(+t.dataset.pick);ui.name=s.first+' '+s.li;render();return}
   if(t.id==='go'){record();return}
   const a=t.dataset.a,id=+t.dataset.id;
-  if(a==='dellog'){S.log.splice(+t.dataset.i,1);save();render()}
+  if(a==='retry'){pull();return}
+  if(a==='dellog'){const l=S.log[+t.dataset.i];S.log.splice(+t.dataset.i,1);commit({action:'delete',id:l.rid});render()}
   if(a==='copy'){
     const got=S.students.filter(s=>count(s.id)>0).sort((a,b)=>count(b.id)-count(a.id));
     let txt='Loaner shirts — '+new Date().toLocaleDateString('en-US')+'\nTotal: '+S.log.length+' shirts, '+new Set(S.log.map(l=>l.id)).size+' students\n';
@@ -293,11 +321,11 @@ document.addEventListener('click',e=>{
   if(a==='rename'){const s=byId(id);
     modal('Rename '+s.first+' '+s.li+'.','<p>New first name + last initial:</p><input type="text" id="rn" value="'+esc(s.first+' '+s.li)+'"><p class="help">If that name already exists, the two will be merged.</p>',
       [{label:'Cancel',cls:'ghost'},{label:'Save',run:bg=>{const p=parseName(bg.querySelector('#rn').value);if(!p)return false;
-        const other=S.students.find(x=>x.id!==id&&keyOf(x)===p.key);
+        const other=S.students.find(x=>x.id!==id&&keyOf(x)===p.key);const old={first:s.first,li:s.li};
         if(other){S.log.forEach(l=>{if(l.id===id)l.id=other.id});S.students=S.students.filter(x=>x.id!==id)}else{s.first=p.first;s.li=p.li}
-        save();render()}}])}
-  if(a==='remove'){const s=byId(id);modal('Delete '+s.first+' '+s.li+'.?','<p>This also deletes their '+count(id)+' loaner record(s).</p>',[{label:'Cancel',cls:'ghost'},{label:'Delete',cls:'red',run:()=>{S.students=S.students.filter(x=>x.id!==id);S.log=S.log.filter(l=>l.id!==id);save();render()}}])}
-  if(a==='reset'){modal('Clear ALL data?','<p>Type <b>CLEAR</b> to confirm.</p><input type="text" id="cf">',[{label:'Cancel',cls:'ghost'},{label:'Clear',cls:'red',run:bg=>{if(bg.querySelector('#cf').value.trim().toUpperCase()!=='CLEAR')return false;S.log=[];S.students=[];save();render()}}])}
+        commit({action:'rename',first:old.first,li:old.li,newFirst:p.first,newLi:p.li});render()}}])}
+  if(a==='remove'){const s=byId(id);modal('Delete '+s.first+' '+s.li+'.?','<p>This also deletes their '+count(id)+' loaner record(s).</p>',[{label:'Cancel',cls:'ghost'},{label:'Delete',cls:'red',run:()=>{S.students=S.students.filter(x=>x.id!==id);S.log=S.log.filter(l=>l.id!==id);commit({action:'deleteStudent',first:s.first,li:s.li});render()}}])}
+  if(a==='reset'){modal('Clear ALL data?','<p>Type <b>CLEAR</b> to confirm.</p><input type="text" id="cf">',[{label:'Cancel',cls:'ghost'},{label:'Clear',cls:'red',run:bg=>{if(bg.querySelector('#cf').value.trim().toUpperCase()!=='CLEAR')return false;S.log=[];S.students=[];commit({action:'reset'});render()}}])}
 });
 document.addEventListener('change',e=>{if(e.target.id==='bag'){ui.bag=e.target.checked;render()}});
 document.addEventListener('input',e=>{
@@ -310,7 +338,11 @@ document.addEventListener('input',e=>{
 document.addEventListener('keydown',e=>{if(e.target.id==='nm'&&e.key==='Enter'){const b=document.getElementById('bag');if(b)b.focus()}});
 
 render();
-if(window.claude&&window.claude.use){
+if(SHEET_URL&&!(window.claude&&window.claude.use)){
+  mode='sheet';S={students:[],log:[],nextId:1};render();pull();
+  setInterval(()=>{if(!document.hidden&&!publishing&&!document.querySelector('.modal-bg'))pull()},20000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden)pull()});
+}else if(window.claude&&window.claude.use){
   window.claude.use('artifact').then(x=>{if(x){art=x;mode='shared'}else loadLocal();render()}).catch(()=>{loadLocal();render()});
 }else{loadLocal();render()}
 })();
