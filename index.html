@@ -45,6 +45,11 @@ input[type=text]:focus{outline:none;border-color:var(--blue)}
 .go.red{background:var(--red)}
 button{font:inherit;cursor:pointer;color:var(--ink);-webkit-text-fill-color:currentColor}
 input,select,textarea{color:var(--ink)}
+.lock{max-width:340px;margin:60px auto;text-align:center}
+.lock input[type=password]{font:inherit;font-size:28px;letter-spacing:.3em;text-align:center;border:2px solid var(--line);border-radius:12px;padding:12px;width:100%;margin:14px 0 10px;color:var(--ink);background:#fff}
+.lock input[type=password]:focus{outline:none;border-color:var(--blue)}
+.lock .err{color:var(--red);font-weight:700;min-height:22px}
+.lockbtn{border:1px solid var(--line);background:#fff;border-radius:999px;padding:4px 10px;font-size:13px;font-weight:700}
 .logo{height:44px;width:auto;flex:none}
 .head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 2px}
 .head h1{margin:0}
@@ -95,6 +100,14 @@ S.students=S.students||[];S.log=S.log||[];if(!S.nextId)S.nextId=1;delete S.stock
 // Paste your Google Apps Script "Web app" URL between the quotes (it ends in /exec):
 const SHEET_URL='https://script.google.com/macros/s/AKfycbzTICU0k1y_bizIMyjkeI7Eq3RVC0HHlMugCmcMscDMK0gbp458xVKqNfK1Wj6VftNU/exec';
 // ================================
+// ===== PASSWORD =====
+const PASS_HASH='96cae35ce8a9b0244178bf28e4966c2ce1b8385723a96a6b838858cdd6ca0a1e'; // SHA-256 of the password
+let PW='',unlocked=false;
+try{PW=localStorage.getItem('shirt_pw')||''}catch(e){}
+async function sha(t){const b=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(t));return [...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('')}
+function lockApp(msg){unlocked=false;PW='';try{localStorage.removeItem('shirt_pw')}catch(e){}lockMsg=msg||'';render()}
+let lockMsg='';
+// =====================
 let art=null,mode='local',saveTimer=null,publishing=false,sheetOK=null;
 function newRid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8)}
 function fromRows(rows){const st={students:[],log:[],nextId:1};const map={};
@@ -103,13 +116,14 @@ function fromRows(rows){const st={students:[],log:[],nextId:1};const map={};
     st.log.push({id:s.id,t:r.t,sess:r.sess,bag:!!r.bag,rid:String(r.id)})});
   st.log.sort((a,b)=>new Date(a.t)-new Date(b.t));return st}
 async function pull(){
-  try{const r=await fetch(SHEET_URL,{cache:'no-store'});const j=await r.json();if(!j.ok)throw 0;S=fromRows(j.rows);sheetOK=true}
+  if(!unlocked)return;
+  try{const r=await fetch(SHEET_URL+'?key='+encodeURIComponent(PW),{cache:'no-store'});const j=await r.json();if(j.error==='bad key'){lockApp('Password changed — enter it again');return}if(!j.ok)throw 0;S=fromRows(j.rows);sheetOK=true}
   catch(e){sheetOK=false}
   render();
 }
 async function push(body){
   publishing=true;render();
-  try{const r=await fetch(SHEET_URL,{method:'POST',body:JSON.stringify(body)});const j=await r.json();if(!j.ok)throw 0;S=fromRows(j.rows);sheetOK=true}
+  try{body.key=PW;const r=await fetch(SHEET_URL,{method:'POST',body:JSON.stringify(body)});const j=await r.json();if(j.error==='bad key'){publishing=false;lockApp('Password changed — enter it again');return}if(!j.ok)throw 0;S=fromRows(j.rows);sheetOK=true}
   catch(e){sheetOK=false;toast('⚠️ Not saved — check the internet and try again');pull()}
   publishing=false;render();
 }
@@ -187,10 +201,15 @@ function record(){
   const f=document.getElementById('nm');if(f)f.focus();
 }
 
+function lockHTML(){
+  return '<div class="wrap"><div class="lock"><img class="logo" style="height:40px" alt="ThrivePoint Academy of Nevada" src="'+LOGO+'"><h1 style="margin-top:14px">👕 Loaner Shirt Tracker</h1><p class="sub">Staff only — enter the password.</p>'+
+    '<form id="lockf"><input type="password" id="pw" inputmode="numeric" autocomplete="current-password" placeholder="••••••"><div class="err">'+esc(lockMsg)+'</div><button class="go" type="submit">Unlock</button></form></div></div>';
+}
 function render(){
+  if(!unlocked){const root=document.getElementById('root');if(!document.getElementById('lockf')){root.innerHTML=lockHTML();const f=document.getElementById('pw');if(f)f.focus()}else{const e=document.querySelector('.lock .err');if(e)e.textContent=lockMsg}return}
   keepUI();
   const root=document.getElementById('root');
-  let h='<div class="wrap"><div class="head"><h1>👕 Loaner Shirt Tracker</h1><img class="logo" alt="ThrivePoint Academy of Nevada" src="'+LOGO+'"></div><p class="sub">Check out a loaner shirt in 3 steps.'+(publishing?' <i>· saving…</i>':'')+'</p>';
+  let h='<div class="wrap"><div class="head"><h1>👕 Loaner Shirt Tracker</h1><img class="logo" alt="ThrivePoint Academy of Nevada" src="'+LOGO+'"></div><p class="sub">Check out a loaner shirt in 3 steps.'+(publishing?' <i>· saving…</i>':'')+' <button class="lockbtn" data-a="lock" title="Lock this device">🔒 Lock</button></p>';
   if(mode==='local')h+='<div class="banner">Saving on this device only — records here won\'t show up on other phones or computers.</div>';
   if(mode==='sheet'&&sheetOK===null)h+='<div class="banner">Loading records from the Google Sheet…</div>';
   if(mode==='sheet'&&sheetOK===false)h+='<div class="banner">⚠️ Can\'t reach the Google Sheet — check the internet. <button class="btn sm ghost" data-a="retry">Try again</button></div>';
@@ -310,6 +329,7 @@ document.addEventListener('click',e=>{
   if(t.id==='go'){record();return}
   const a=t.dataset.a,id=+t.dataset.id;
   if(a==='retry'){pull();return}
+  if(a==='lock'){lockApp('');return}
   if(a==='dellog'){const l=S.log[+t.dataset.i];S.log.splice(+t.dataset.i,1);commit({action:'delete',id:l.rid});render()}
   if(a==='copy'){
     const got=S.students.filter(s=>count(s.id)>0).sort((a,b)=>count(b.id)-count(a.id));
@@ -337,6 +357,8 @@ document.addEventListener('input',e=>{
 });
 document.addEventListener('keydown',e=>{if(e.target.id==='nm'&&e.key==='Enter'){const b=document.getElementById('bag');if(b)b.focus()}});
 
+let started=false;
+function start(){if(started){if(mode==='sheet')pull();return}started=true;
 render();
 if(SHEET_URL&&!(window.claude&&window.claude.use)){
   mode='sheet';S={students:[],log:[],nextId:1};render();pull();
@@ -345,6 +367,14 @@ if(SHEET_URL&&!(window.claude&&window.claude.use)){
 }else if(window.claude&&window.claude.use){
   window.claude.use('artifact').then(x=>{if(x){art=x;mode='shared'}else loadLocal();render()}).catch(()=>{loadLocal();render()});
 }else{loadLocal();render()}
+}
+document.addEventListener('submit',async e=>{
+  if(e.target.id!=='lockf')return;e.preventDefault();
+  const v=document.getElementById('pw').value.trim();
+  if(await sha(v)===PASS_HASH){PW=v;unlocked=true;lockMsg='';try{localStorage.setItem('shirt_pw',v)}catch(e){}start();render()}
+  else{lockMsg='Wrong password — try again';document.getElementById('pw').value='';render()}
+});
+(async()=>{if(PW&&await sha(PW)===PASS_HASH){unlocked=true;start()}render()})();
 })();
 </script>
 </body>
